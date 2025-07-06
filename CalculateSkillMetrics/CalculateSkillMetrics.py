@@ -1,6 +1,7 @@
 import logging
 import os
 from typing import Optional
+from math import sqrt
 
 import vtk
 import qt
@@ -185,26 +186,122 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
     def __init__(self) -> None:
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
+        self.sequenceBrowser = None
+        self.boundingBoxSequences = []  # format: [[classname, sequenceNode]]
 
     def getParameterNode(self):
         return CalculateSkillMetricsParameterNode(super().getParameterNode())
 
+    def computeCenterOfBoundingBox(self, markupsNode):
+        """
+        Computes the center of the bounding box from the four corners
+        """
+        points = []
+        for i in range(markupsNode.GetNumberOfControlPoints()):
+            pos = [0, 0 ,0]
+            markupsNode.GetNthControlPointPosition(i, pos)
+
+            # Convert x and y coords to mm
+            xMM, yMM = self.convertPixelsToMM(pos[0], pos[1], pos[2])
+
+            points.append([xMM, yMM, pos[2]])
+
+        x, y, z = zip(*points)
+        return [sum(x) / len(x), sum(y) / len(y), sum(z) / len(z)]
+
+    def convertPixelsToMM(self, xPixels, yPixels, zMM, principlePoint = [314.273, 251.183], focalLength = 592.667):
+        xMM = (xPixels - principlePoint[0]) * zMM / focalLength
+        yMM = (yPixels - principlePoint[1]) * zMM / focalLength
+        return xMM, yMM
+
+    def isFrameValid(self, markupsNode):
+        """
+        Frame is invalid if the markup points are at (0,0,0).
+        This occurs when the tool is out of frame.
+        """
+        for i in range(markupsNode.GetNumberOfControlPoints()):
+            pos = [0, 0 ,0]
+            markupsNode.GetNthControlPointPosition(i, pos)
+            if pos != [0, 0, 0]:
+                return True
+        return False
+
+    def calculateMetricsFromSequence(self, boundingBoxSequence):
+        numberOfFrames = boundingBoxSequence.GetNumberOfDataNodes()
+        centerPathLength = 0.0
+        usageTime = 0.0
+
+        lastCenter = None
+        lastTimestamp = None
+
+        for i in range(numberOfFrames):
+            indexValue = boundingBoxSequence.GetNthIndexValue(i)  # timestamp
+            markupsNode = boundingBoxSequence.GetNthDataNode(i)  # markupsNode at timestamp
+
+            # Skip frame if invalid
+            if not self.isFrameValid(markupsNode):
+                lastCenter = None
+                lastTimestamp = None
+                continue
+
+            # Convert index value to float timestamp
+            timestamp = float(indexValue)
+
+            # Compute center of bounding box
+            center = self.computeCenterOfBoundingBox(markupsNode)
+
+            # Compute metrics if previous frame was valid
+            if lastCenter is not None and lastTimestamp is not None:
+                timeDiff = timestamp - lastTimestamp
+                distance = sqrt(sum((center[j] - lastCenter[j]) ** 2 for j in range(3)))  # Euclidean distance of centers
+                centerPathLength += distance
+                usageTime += timeDiff
+
+            lastCenter = center
+            lastTimestamp = timestamp
+
+        return centerPathLength, usageTime
+
     def calculate(self, sequenceBrowser, table):
+
+        self.sequenceBrowser = sequenceBrowser
+        self.boundingBoxSequences = []
+
+        # Get bounding box sequences from sequence browser
+        synchronizedSequenceNodes = vtk.vtkCollection()
+        self.sequenceBrowser.GetSynchronizedSequenceNodes(synchronizedSequenceNodes)
+        for i in range(synchronizedSequenceNodes.GetNumberOfItems()):
+            sequenceNode = synchronizedSequenceNodes.GetItemAsObject(i)
+            if "Markups Sequence" in sequenceNode.GetName():
+                self.boundingBoxSequences.append(
+                    [sequenceNode.GetName().split(" ")[0].upper(), sequenceNode]
+                )
+
+        # Calculate metrics for each class
+        metrics = []
+        for i in range(len(self.boundingBoxSequences)):
+            currentMetrics = {}
+            pathLength, usageTime = self.calculateMetricsFromSequence(self.boundingBoxSequences[i][1])
+            currentMetrics["CENTER_PATH_LENGTH"] = pathLength
+            currentMetrics["USAGE_TIME"] = usageTime
+            currentMetrics["CLASS_NAME"] = self.boundingBoxSequences[i][0]
+            metrics.append(currentMetrics)
 
         # Clear table
         table.clear()
 
         # Insert columns
         table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["Path Length", "Usage Time"])
+        table.setHorizontalHeaderLabels(["Center Path Length (mm)", "Usage Time (s)"])
 
-        # Create row headers
-        table.setRowCount(1)
-        table.setVerticalHeaderLabels(["ULTRASOUND"])
+        # Set row headers
+        table.setRowCount(len(metrics))
+        table.setVerticalHeaderLabels([metricData["CLASS_NAME"] for metricData in metrics])
 
         # Fill row data
-        item = qt.QTableWidgetItem("test")  # create a new Item
-        table.setItem(0, 0, item)
+        for i in range(len(metrics)):
+            table.setItem(i, 0, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
+            table.setItem(i, 1, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
 
         # Set table visible
         table.setVisible(True)
