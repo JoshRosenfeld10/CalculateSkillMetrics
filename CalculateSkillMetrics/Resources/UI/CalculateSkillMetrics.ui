@@ -85,7 +85,7 @@
    <item>
     <widget class="QTableWidget" name="table">
      <property name="enabled">
-      <bool>false</bool>
+      <bool>true</bool>
      </property>
      <property name="rowCount">
       <number>0</number>

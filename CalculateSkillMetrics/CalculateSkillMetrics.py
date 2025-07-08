@@ -196,7 +196,16 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         """
         Computes the center of the bounding box from the four corners
         """
-        points = []
+        corners = self.getCornerPositionsOfBoundingBox(markupsNode)
+        x, y, z = zip(*corners)
+        return [sum(x) / len(x), sum(y) / len(y), sum(z) / len(z)]
+
+    def getCornerPositionsOfBoundingBox(self, markupsNode):
+        """
+        Returns a list of the bounding box corner positions, adjusting for mm.
+        corners = [[top left], [top right], [bottom left], [bottom right]]
+        """
+        corners = []
         for i in range(markupsNode.GetNumberOfControlPoints()):
             pos = [0, 0 ,0]
             markupsNode.GetNthControlPointPosition(i, pos)
@@ -204,10 +213,10 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             # Convert x and y coords to mm
             xMM, yMM = self.convertPixelsToMM(pos[0], pos[1], pos[2])
 
-            points.append([xMM, yMM, pos[2]])
+            corners.append([xMM, yMM, pos[2]])
 
-        x, y, z = zip(*points)
-        return [sum(x) / len(x), sum(y) / len(y), sum(z) / len(z)]
+        return corners
+
 
     def convertPixelsToMM(self, xPixels, yPixels, zMM, principlePoint = [314.273, 251.183], focalLength = 592.667):
         xMM = (xPixels - principlePoint[0]) * zMM / focalLength
@@ -226,12 +235,19 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
                 return True
         return False
 
+    def euclideanDistance(self, point1, point2):
+        return sqrt(sum((point2[j] - point1[j]) ** 2 for j in range(3)))
+
     def calculateMetricsFromSequence(self, boundingBoxSequence):
         numberOfFrames = boundingBoxSequence.GetNumberOfDataNodes()
-        centerPathLength = 0.0
+        centerPathLength = corner1PathLength = corner2PathLength = corner3PathLength = corner4PathLength = 0.0
         usageTime = 0.0
 
         lastCenter = None
+        lastCorner1 = None
+        lastCorner2 = None
+        lastCorner3 = None
+        lastCorner4 = None
         lastTimestamp = None
 
         for i in range(numberOfFrames):
@@ -241,6 +257,10 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             # Skip frame if invalid
             if not self.isFrameValid(markupsNode):
                 lastCenter = None
+                lastCorner1 = None
+                lastCorner2 = None
+                lastCorner3 = None
+                lastCorner4 = None
                 lastTimestamp = None
                 continue
 
@@ -250,17 +270,35 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             # Compute center of bounding box
             center = self.computeCenterOfBoundingBox(markupsNode)
 
+            # Get 4 corners of bounding box
+            corners = self.getCornerPositionsOfBoundingBox(markupsNode)
+            corner1, corner2, corner3, corner4 = corners
+
             # Compute metrics if previous frame was valid
             if lastCenter is not None and lastTimestamp is not None:
                 timeDiff = timestamp - lastTimestamp
-                distance = sqrt(sum((center[j] - lastCenter[j]) ** 2 for j in range(3)))  # Euclidean distance of centers
-                centerPathLength += distance
+
+                centerDistance = self.euclideanDistance(lastCenter, center)
+                corner1Distance = self.euclideanDistance(lastCorner1, corner1)
+                corner2Distance = self.euclideanDistance(lastCorner2, corner2)
+                corner3Distance = self.euclideanDistance(lastCorner3, corner3)
+                corner4Distance = self.euclideanDistance(lastCorner4, corner4)
+
+                centerPathLength += centerDistance
+                corner1PathLength += corner1Distance
+                corner2PathLength += corner2Distance
+                corner3PathLength += corner3Distance
+                corner4PathLength += corner4Distance
                 usageTime += timeDiff
 
             lastCenter = center
+            lastCorner1 = corner1
+            lastCorner2 = corner2
+            lastCorner3 = corner3
+            lastCorner4 = corner4
             lastTimestamp = timestamp
 
-        return centerPathLength, usageTime
+        return centerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime
 
     def calculate(self, sequenceBrowser, table):
 
@@ -281,8 +319,14 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         metrics = []
         for i in range(len(self.boundingBoxSequences)):
             currentMetrics = {}
-            pathLength, usageTime = self.calculateMetricsFromSequence(self.boundingBoxSequences[i][1])
-            currentMetrics["CENTER_PATH_LENGTH"] = pathLength
+            centerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime = (
+                self.calculateMetricsFromSequence(self.boundingBoxSequences[i][1])
+            )
+            currentMetrics["CENTER_PATH_LENGTH"] = centerPathLength
+            currentMetrics["CORNER_1_PATH_LENGTH"] = corner1PathLength
+            currentMetrics["CORNER_2_PATH_LENGTH"] = corner2PathLength
+            currentMetrics["CORNER_3_PATH_LENGTH"] = corner3PathLength
+            currentMetrics["CORNER_4_PATH_LENGTH"] = corner4PathLength
             currentMetrics["USAGE_TIME"] = usageTime
             currentMetrics["CLASS_NAME"] = self.boundingBoxSequences[i][0]
             metrics.append(currentMetrics)
@@ -291,8 +335,17 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         table.clear()
 
         # Insert columns
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["Center Path Length (mm)", "Usage Time (s)"])
+        columnLabels = [
+            "Center Path Length (mm)",
+            "Markup 1 Path Length (mm)",
+            "Markup 2 Path Length (mm)",
+            "Markup 3 Path Length (mm)",
+            "Markup 4 Path Length (mm)",
+            "Usage Time (s)"
+        ]
+        table.setColumnCount(len(columnLabels))
+        for i in range(len(columnLabels)): table.setColumnWidth(i,150)
+        table.setHorizontalHeaderLabels(columnLabels)
 
         # Set row headers
         table.setRowCount(len(metrics))
@@ -301,7 +354,11 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         # Fill row data
         for i in range(len(metrics)):
             table.setItem(i, 0, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
-            table.setItem(i, 1, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
+            table.setItem(i, 1, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_1_PATH_LENGTH"], 2))))
+            table.setItem(i, 2, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_2_PATH_LENGTH"], 2))))
+            table.setItem(i, 3, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_3_PATH_LENGTH"], 2))))
+            table.setItem(i, 4, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_4_PATH_LENGTH"], 2))))
+            table.setItem(i, 5, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
 
         # Set table visible
         table.setVisible(True)
