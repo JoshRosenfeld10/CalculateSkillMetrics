@@ -298,7 +298,8 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             lastCorner4 = corner4
             lastTimestamp = timestamp
 
-        return centerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime
+        totalCornerPathLength = corner1PathLength + corner2PathLength + corner3PathLength + corner4PathLength
+        return centerPathLength, totalCornerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime
 
     def calculate(self, sequenceBrowser, table):
 
@@ -319,10 +320,11 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         metrics = []
         for i in range(len(self.boundingBoxSequences)):
             currentMetrics = {}
-            centerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime = (
+            centerPathLength, totalCornerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime = (
                 self.calculateMetricsFromSequence(self.boundingBoxSequences[i][1])
             )
             currentMetrics["CENTER_PATH_LENGTH"] = centerPathLength
+            currentMetrics["TOTAL_CORNER_PATH_LENGTH"] = totalCornerPathLength
             currentMetrics["CORNER_1_PATH_LENGTH"] = corner1PathLength
             currentMetrics["CORNER_2_PATH_LENGTH"] = corner2PathLength
             currentMetrics["CORNER_3_PATH_LENGTH"] = corner3PathLength
@@ -334,31 +336,32 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         # Clear table
         table.clear()
 
-        # Insert columns
-        columnLabels = [
+        # Insert rows
+        rowLabels = [
             "Center Path Length (mm)",
+            "Total Markup Path Length (mm)",
             "Markup 1 Path Length (mm)",
             "Markup 2 Path Length (mm)",
             "Markup 3 Path Length (mm)",
             "Markup 4 Path Length (mm)",
             "Usage Time (s)"
         ]
-        table.setColumnCount(len(columnLabels))
-        for i in range(len(columnLabels)): table.setColumnWidth(i,150)
-        table.setHorizontalHeaderLabels(columnLabels)
+        table.setRowCount(len(rowLabels))
+        table.setVerticalHeaderLabels(rowLabels)
 
-        # Set row headers
-        table.setRowCount(len(metrics))
-        table.setVerticalHeaderLabels([metricData["CLASS_NAME"] for metricData in metrics])
+        # Set column headers
+        table.setColumnCount(len(metrics))
+        table.setHorizontalHeaderLabels([metricData["CLASS_NAME"] for metricData in metrics])
 
-        # Fill row data
+        # Fill column data
         for i in range(len(metrics)):
-            table.setItem(i, 0, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
-            table.setItem(i, 1, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_1_PATH_LENGTH"], 2))))
-            table.setItem(i, 2, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_2_PATH_LENGTH"], 2))))
-            table.setItem(i, 3, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_3_PATH_LENGTH"], 2))))
-            table.setItem(i, 4, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_4_PATH_LENGTH"], 2))))
-            table.setItem(i, 5, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
+            table.setItem(0, i, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
+            table.setItem(1, i, qt.QTableWidgetItem(str(round(metrics[i]["TOTAL_CORNER_PATH_LENGTH"], 2))))
+            table.setItem(2, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_1_PATH_LENGTH"], 2))))
+            table.setItem(3, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_2_PATH_LENGTH"], 2))))
+            table.setItem(4, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_3_PATH_LENGTH"], 2))))
+            table.setItem(5, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_4_PATH_LENGTH"], 2))))
+            table.setItem(6, i, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
 
         # Set table visible
         table.setVisible(True)
