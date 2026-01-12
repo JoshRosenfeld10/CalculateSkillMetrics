@@ -188,6 +188,7 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
         self.sequenceBrowser = None
         self.boundingBoxSequences = []  # format: [[classname, sequenceNode]]
+        self.roiSequences = []          # format: [[classname, sequenceNode]]
 
     def getParameterNode(self):
         return CalculateSkillMetricsParameterNode(super().getParameterNode())
@@ -223,7 +224,7 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         yMM = (yPixels - principlePoint[1]) * zMM / focalLength
         return xMM, yMM
 
-    def isFrameValid(self, markupsNode):
+    def isMarkupsFrameValid(self, markupsNode):
         """
         Frame is invalid if the markup points are at (0,0,0).
         This occurs when the tool is out of frame.
@@ -234,6 +235,10 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             if pos != [0, 0, 0]:
                 return True
         return False
+
+    def isROIFrameValid(self, roiNode):
+        # TODO: get some check that checks if the ROI frame is valid
+        return True
 
     def euclideanDistance(self, point1, point2):
         return sqrt(sum((point2[j] - point1[j]) ** 2 for j in range(3)))
@@ -255,7 +260,7 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             markupsNode = boundingBoxSequence.GetNthDataNode(i)  # markupsNode at timestamp
 
             # Skip frame if invalid
-            if not self.isFrameValid(markupsNode):
+            if not self.isMarkupsFrameValid(markupsNode):
                 lastCenter = None
                 lastCorner1 = None
                 lastCorner2 = None
@@ -301,10 +306,50 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
         totalCornerPathLength = corner1PathLength + corner2PathLength + corner3PathLength + corner4PathLength
         return centerPathLength, totalCornerPathLength, corner1PathLength, corner2PathLength, corner3PathLength, corner4PathLength, usageTime
 
+    def calculateMetricsFromROISequence(self, roiSequence):
+        numberOfFrames = roiSequence.GetNumberOfDataNodes()
+        centerPathLength = 0.0
+        usageTime = 0.0
+
+        lastCenter = None
+        lastTimestamp = None
+
+        for i in range(numberOfFrames):
+            indexValue = roiSequence.GetNthIndexValue(i)  # timestamp
+            roiNode = roiSequence.GetNthDataNode(i)       # roiNode at timestamp
+
+            # Skip frame if invalid
+            if not self.isROIFrameValid(roiNode):
+                lastCenter = None
+                lastTimestamp = None
+                continue
+
+            # Convert index value to float timestamp
+            timestamp = float(indexValue)
+
+            # Compute center of ROI node
+            center = [0.0, 0.0, 0.0]
+            roiNode.GetCenter(center)
+
+            # Compute metrics if previous frame was valid
+            if lastCenter and lastTimestamp:
+                timeDiff = timestamp - lastTimestamp
+
+                centerDistance = self.euclideanDistance(lastCenter, center)
+
+                centerPathLength += centerDistance
+                usageTime += timeDiff
+
+            lastCenter = center
+            lastTimestamp = timestamp
+
+        return centerPathLength, usageTime
+
     def calculate(self, sequenceBrowser, table):
 
         self.sequenceBrowser = sequenceBrowser
         self.boundingBoxSequences = []
+        self.roiSequences = []
 
         # Get bounding box sequences from sequence browser
         synchronizedSequenceNodes = vtk.vtkCollection()
@@ -314,6 +359,10 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             if "Markups Sequence" in sequenceNode.GetName():
                 self.boundingBoxSequences.append(
                     [sequenceNode.GetName().split(" ")[0].upper(), sequenceNode]
+                )
+            if "ROI_SEQUENCE" in sequenceNode.GetName():
+                self.roiSequences.append(
+                    [sequenceNode.GetName().split("_")[0].upper(), sequenceNode]
                 )
 
         # Calculate metrics for each class
@@ -331,6 +380,21 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
             currentMetrics["CORNER_4_PATH_LENGTH"] = corner4PathLength
             currentMetrics["USAGE_TIME"] = usageTime
             currentMetrics["CLASS_NAME"] = self.boundingBoxSequences[i][0]
+            metrics.append(currentMetrics)
+
+        for i in range(len(self.roiSequences)):
+            currentMetrics = {}
+            centerPathLength, usageTime = (
+                self.calculateMetricsFromROISequence(self.roiSequences[i][1])
+            )
+            currentMetrics["CENTER_PATH_LENGTH"] = centerPathLength
+            currentMetrics["TOTAL_CORNER_PATH_LENGTH"] = "N/A"
+            currentMetrics["CORNER_1_PATH_LENGTH"] = "N/A"
+            currentMetrics["CORNER_2_PATH_LENGTH"] = "N/A"
+            currentMetrics["CORNER_3_PATH_LENGTH"] = "N/A"
+            currentMetrics["CORNER_4_PATH_LENGTH"] = "N/A"
+            currentMetrics["USAGE_TIME"] = usageTime
+            currentMetrics["CLASS_NAME"] = f"{self.roiSequences[i][0]}_ROI"
             metrics.append(currentMetrics)
 
         # Clear table
@@ -355,13 +419,22 @@ class CalculateSkillMetricsLogic(ScriptedLoadableModuleLogic):
 
         # Fill column data
         for i in range(len(metrics)):
-            table.setItem(0, i, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
-            table.setItem(1, i, qt.QTableWidgetItem(str(round(metrics[i]["TOTAL_CORNER_PATH_LENGTH"], 2))))
-            table.setItem(2, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_1_PATH_LENGTH"], 2))))
-            table.setItem(3, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_2_PATH_LENGTH"], 2))))
-            table.setItem(4, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_3_PATH_LENGTH"], 2))))
-            table.setItem(5, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_4_PATH_LENGTH"], 2))))
-            table.setItem(6, i, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
+            if "_ROI" in metrics[i]["CLASS_NAME"]:
+                table.setItem(0, i, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
+                table.setItem(1, i, qt.QTableWidgetItem(str(metrics[i]["TOTAL_CORNER_PATH_LENGTH"])))
+                table.setItem(2, i, qt.QTableWidgetItem(str(metrics[i]["CORNER_1_PATH_LENGTH"])))
+                table.setItem(3, i, qt.QTableWidgetItem(str(metrics[i]["CORNER_2_PATH_LENGTH"])))
+                table.setItem(4, i, qt.QTableWidgetItem(str(metrics[i]["CORNER_3_PATH_LENGTH"])))
+                table.setItem(5, i, qt.QTableWidgetItem(str(metrics[i]["CORNER_4_PATH_LENGTH"])))
+                table.setItem(6, i, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
+            else:
+                table.setItem(0, i, qt.QTableWidgetItem(str(round(metrics[i]["CENTER_PATH_LENGTH"], 2))))
+                table.setItem(1, i, qt.QTableWidgetItem(str(round(metrics[i]["TOTAL_CORNER_PATH_LENGTH"], 2))))
+                table.setItem(2, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_1_PATH_LENGTH"], 2))))
+                table.setItem(3, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_2_PATH_LENGTH"], 2))))
+                table.setItem(4, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_3_PATH_LENGTH"], 2))))
+                table.setItem(5, i, qt.QTableWidgetItem(str(round(metrics[i]["CORNER_4_PATH_LENGTH"], 2))))
+                table.setItem(6, i, qt.QTableWidgetItem(str(round(metrics[i]["USAGE_TIME"], 2))))
 
         # Set table visible
         table.setVisible(True)
